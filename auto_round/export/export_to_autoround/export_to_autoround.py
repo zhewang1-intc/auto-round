@@ -22,8 +22,7 @@ import torch.nn as nn
 import transformers
 
 from auto_round.export.register import register_format
-from auto_round.utils import get_layer_names_in_block, get_block_names, get_module, logger, set_module
-
+from auto_round.utils import get_layer_names_in_block, get_block_names, get_module, logger, set_module, get_qlinear_by_backend
 
 
 def check_neq_config(config, data_type, bits, group_size, sym):
@@ -48,7 +47,7 @@ def get_autogptq_backend_config(backend, bits=4):
     use_qigen = False
     if backend == "gptq:qigen":
         use_qigen = True
-    if backend == "gptq:triton":  ##TODO refine the code
+    if backend == "gptq:triton":  # TODO refine the code
         use_triton = True
     if backend == "gptq:marlin":
         use_triton = False
@@ -72,9 +71,7 @@ def get_autogptq_backend_config(backend, bits=4):
 
 
 @register_format("autoround")
-def save_quantized_as_autoround(output_dir, inplace=True, backend="gptq:exllamav2", **kwargs):
-    from auto_gptq.utils.import_utils import dynamically_import_QuantLinear
-
+def save_quantized_as_autoround(output_dir, inplace=True, backend="qbits", **kwargs):
     model = kwargs["model"]
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
@@ -90,23 +87,10 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="gptq:exllamav
 
         bits = config["bits"]
         group_size = config["group_size"]
-        use_triton, disable_exllamav1, disable_exllamav2, use_qigen, disable_marlin = get_autogptq_backend_config(
-            backend, bits
-        )
 
         layer = get_module(model, name)
         device = "cpu"
-        QuantLinear = dynamically_import_QuantLinear(
-            use_triton=use_triton,
-            desc_act=False,
-            group_size=group_size,
-            bits=bits,
-            disable_exllama=disable_exllamav1,
-            disable_exllamav2=disable_exllamav2,
-            use_qigen=use_qigen,
-            disable_marlin=disable_marlin,
-        )
-
+        QuantLinear = get_qlinear_by_backend(backend, bits, group_size)
         if isinstance(layer, nn.Linear):
             in_features = layer.in_features
             out_features = layer.out_features
@@ -118,7 +102,7 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="gptq:exllamav
             out_features = layer.weight.shape[1]
         bias = layer.bias is not None and torch.any(layer.bias)
 
-        new_layer = QuantLinear(  ##pylint: disable=E1123
+        new_layer = QuantLinear(  # pylint: disable=E1123
             bits, group_size, in_features, out_features, bias, weight_dtype=layer.weight.dtype
         )
 
@@ -129,8 +113,9 @@ def save_quantized_as_autoround(output_dir, inplace=True, backend="gptq:exllamav
         zero = weight_config[name]["zp"]
         # so far can only pack layer on CPU
         qlayer.to("cpu")
-        ##force to float32 to be compatible with torch 2.0
-        layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu").to(torch.float32)
+        # force to float32 to be compatible with torch 2.0
+        layer, scale, zero = layer.to("cpu"), scale.to(
+            "cpu"), zero.to("cpu").to(torch.float32)
         qlayer.pack(layer, scale, zero, None)
         qlayer.to(device)
     quantization_config = kwargs["serialization_dict"]
@@ -189,7 +174,8 @@ def save(model: nn.Module, save_dir: str, max_shard_size: str = "10GB", safe_ser
             Whether to save the model using `safetensors` or the traditional PyTorch way (that uses `pickle`).
     """
     os.makedirs(save_dir, exist_ok=True)
-    model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
+    model.save_pretrained(save_dir, max_shard_size=max_shard_size,
+                          safe_serialization=safe_serialization)
     config_file = "quantize_config.json"
     if hasattr(model, "config") and hasattr(model.config, "quantize_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:

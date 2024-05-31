@@ -26,6 +26,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from transformers import AutoModelForCausalLM as AutoModelForCausalLM
+import sys
 import importlib.util
 import warnings
 from dataclasses import dataclass
@@ -42,10 +44,9 @@ from transformers.quantizers import AutoQuantizationConfig, HfQuantizer
 from transformers.quantizers.auto import AUTO_QUANTIZER_MAPPING
 from transformers.utils.quantization_config import AwqConfig, GPTQConfig, QuantizationConfigMixin, QuantizationMethod
 
-from auto_round.utils import get_module, set_module
+from auto_round.utils import get_module, set_module, get_qlinear_by_backend
 
 logger = getLogger(__name__)
-import sys
 
 if sys.version_info < (3, 8):
     import importlib_metadata
@@ -76,7 +77,8 @@ _auto_gptq_available = _is_package_available("auto_gptq")
 
 def is_auto_gptq_available():
     if _auto_gptq_available:
-        version_autogptq = version.parse(importlib_metadata.version("auto_gptq"))
+        version_autogptq = version.parse(
+            importlib_metadata.version("auto_gptq"))
         if AUTOGPTQ_MINIMUM_VERSION < version_autogptq:
             return True
         else:
@@ -109,9 +111,11 @@ class AutoHfQuantizer:
         # Convert it to a QuantizationConfig if the q_config is a dict
         if isinstance(quantization_config, dict):
             if "auto-round" in quantization_config["quant_method"]:
-                quantization_config = AutoRoundConfig.from_dict(quantization_config)
+                quantization_config = AutoRoundConfig.from_dict(
+                    quantization_config)
             else:
-                quantization_config = AutoQuantizationConfig.from_dict(quantization_config)  # pylint: disable=E1101
+                quantization_config = AutoQuantizationConfig.from_dict(
+                    quantization_config)  # pylint: disable=E1101
         quant_method = quantization_config.quant_method
 
         # Again, we need a special care for bnb as we have a single quantization config
@@ -136,7 +140,8 @@ class AutoHfQuantizer:
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, **kwargs):
-        quantization_config = AutoQuantizationConfig.from_pretrained(pretrained_model_name_or_path, **kwargs)
+        quantization_config = AutoQuantizationConfig.from_pretrained(
+            pretrained_model_name_or_path, **kwargs)
         return cls.from_config(quantization_config)
 
     @classmethod
@@ -158,9 +163,11 @@ class AutoHfQuantizer:
 
         if isinstance(quantization_config, dict):
             if "auto-round" in quantization_config["quant_method"]:
-                quantization_config = AutoRoundConfig.from_dict(quantization_config)
+                quantization_config = AutoRoundConfig.from_dict(
+                    quantization_config)
             else:
-                quantization_config = AutoQuantizationConfig.from_dict(quantization_config)  # pylint: disable=E1101
+                quantization_config = AutoQuantizationConfig.from_dict(
+                    quantization_config)  # pylint: disable=E1101
 
         if isinstance(quantization_config, (GPTQConfig, AwqConfig)) and quantization_config_from_args is not None:
             # special case for GPTQ / AWQ config collision
@@ -242,10 +249,12 @@ class AutoRoundConfig(QuantizationConfigMixin):
     def post_init(self):
         r"""Safety checker that arguments are correct."""
         if self.bits not in [2, 3, 4, 8]:
-            raise ValueError(f"Only support quantization to [2,3,4,8] bits but found {self.bits}")
+            raise ValueError(
+                f"Only support quantization to [2,3,4,8] bits but found {self.bits}")
         if self.group_size != -1 and self.group_size <= 0:
-            raise ValueError("group_size must be greater than 0 or equal to -1")
-        ##TODO add more check
+            raise ValueError(
+                "group_size must be greater than 0 or equal to -1")
+        # TODO add more check
 
     def to_dict(self):
         config_dict = super().to_dict()
@@ -264,19 +273,24 @@ class AutoRoundQuantizer(HfQuantizer):
         super().__init__(quantization_config, **kwargs)
 
     def validate_environment(self, *args, **kwargs):
-        gptq_supports_cpu = version.parse(importlib.metadata.version("auto-gptq")) > version.parse("0.4.2")
+        gptq_supports_cpu = version.parse(
+            importlib.metadata.version("auto-gptq")) > version.parse("0.4.2")
         if not gptq_supports_cpu and not torch.cuda.is_available():
-            raise RuntimeError("GPU is required to quantize or run quantize model.")
+            raise RuntimeError(
+                "GPU is required to quantize or run quantize model.")
         elif not is_auto_gptq_available():
-            raise ImportError("Loading a GPTQ quantized model requires auto-gptq library (`pip install auto-gptq`)")
+            raise ImportError(
+                "Loading a GPTQ quantized model requires auto-gptq library (`pip install auto-gptq`)")
         elif version.parse(importlib.metadata.version("auto_gptq")) < version.parse("0.4.2"):
-            raise ImportError("You need a version of auto_gptq >= 0.4.2 to use GPTQ: `pip install --upgrade auto-gptq`")
+            raise ImportError(
+                "You need a version of auto_gptq >= 0.4.2 to use GPTQ: `pip install --upgrade auto-gptq`")
 
     def update_torch_dtype(self, torch_dtype: "torch.dtype") -> "torch.dtype":
         if torch_dtype is None:
             torch_dtype = torch.float16
         elif torch_dtype != torch.float16:
-            logger.info("We suggest you to set `torch_dtype=torch.float16` for better efficiency with AutoRound.")
+            logger.info(
+                "We suggest you to set `torch_dtype=torch.float16` for better efficiency with AutoRound.")
         return torch_dtype
 
     def convert_model(self, model: nn.Module):
@@ -308,9 +322,12 @@ class AutoRoundQuantizer(HfQuantizer):
                 layer_configs[layer_name]["data_type"] = data_type
                 layer_configs[layer_name]["sym"] = sym
             else:
-                layer_configs[layer_name]["bits"] = extra_config.get("bits", bits)
-                layer_configs[layer_name]["group_size"] = extra_config.get("group_size", group_size)
-                layer_configs[layer_name]["data_type"] = extra_config.get("data_type", data_type)
+                layer_configs[layer_name]["bits"] = extra_config.get(
+                    "bits", bits)
+                layer_configs[layer_name]["group_size"] = extra_config.get(
+                    "group_size", group_size)
+                layer_configs[layer_name]["data_type"] = extra_config.get(
+                    "data_type", data_type)
                 layer_configs[layer_name]["sym"] = extra_config.get("sym", sym)
         backend = quantization_config.backend
 
@@ -335,30 +352,19 @@ class AutoRoundQuantizer(HfQuantizer):
             data_type = config["data_type"]
             if not (bits <= 8 and data_type == "int"):
                 continue
-            from auto_round.export.export_to_autoround.export_to_autoround import get_autogptq_backend_config
 
-            use_triton, disable_exllama, disable_exllamav2, use_qigen, disable_marlin = get_autogptq_backend_config(
-                backend, bits
-            )
-            QuantLinear = dynamically_import_QuantLinear(
-                use_triton=False,
-                desc_act=False,
-                group_size=group_size,
-                bits=bits,
-                disable_exllama=True,
-                disable_exllamav2=False,
-                use_qigen=use_qigen,
-                disable_marlin=disable_marlin,
-            )
+            QuantLinear = get_qlinear_by_backend(
+                backend, bits, group_size)
+
             layer = get_module(module, layer_name)
             device = get_device(layer)
             if isinstance(layer, nn.Linear):
                 in_features = layer.in_features
                 out_features = layer.out_features
-            elif isinstance(layer, nn.Conv2d):  ##not supported now
+            elif isinstance(layer, nn.Conv2d):  # not supported now
                 in_features = layer.in_channels
                 out_features = layer.out_channels
-            elif isinstance(layer, Conv1D):  ##TODO need to have a check
+            elif isinstance(layer, Conv1D):  # TODO need to have a check
                 in_features = layer.weight.shape[0]
                 out_features = layer.weight.shape[1]
             bias = layer.bias is not None
@@ -428,12 +434,11 @@ class AutoRoundQuantizer(HfQuantizer):
         return True
 
 
-import transformers
-
-transformers_version = [int(item) for item in transformers.__version__.split('.')[:2]]
+transformers_version = [int(item)
+                        for item in transformers.__version__.split('.')[:2]]
 if transformers_version[0] == 4 and transformers_version[1] < 38:
-    logger.error("Please upgrade transformers>=4.38.0 to support lm-head quantization")
+    logger.error(
+        "Please upgrade transformers>=4.38.0 to support lm-head quantization")
 
 transformers.quantizers.auto.AutoHfQuantizer = AutoHfQuantizer
 transformers.modeling_utils.AutoHfQuantizer = AutoHfQuantizer
-from transformers import AutoModelForCausalLM as AutoModelForCausalLM

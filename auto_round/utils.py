@@ -12,11 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import transformers
+import importlib
 import copy
 import logging
 import os
 import subprocess
 from collections import UserDict
+import auto_round.qlinear_qbits as qlinear_qbits
 
 # for cpu usage
 import cpuinfo
@@ -29,12 +32,11 @@ logger = logging.getLogger("autoround")
 logger.setLevel(logging.INFO)
 logger.propagate = False
 fh = logging.StreamHandler()
-fh_formatter = logging.Formatter("%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s", "%Y-%m-%d %H:%M:%S")
+fh_formatter = logging.Formatter(
+    "%(asctime)s %(levelname)s %(filename)s L%(lineno)d: %(message)s", "%Y-%m-%d %H:%M:%S")
 fh.setFormatter(fh_formatter)
 logger.addHandler(fh)
 
-import importlib
-import transformers
 
 class LazyImport(object):
     """Lazy import python module till use."""
@@ -70,6 +72,26 @@ class LazyImport(object):
 
 auto_gptq = LazyImport("auto_gptq")
 htcore = LazyImport("habana_frameworks.torch.core")
+
+
+def get_qlinear_by_backend(backend, bits, group_size):
+    from auto_round.export.export_to_autoround.export_to_autoround import get_autogptq_backend_config
+    use_triton, disable_exllamav1, disable_exllamav2, use_qigen, disable_marlin = get_autogptq_backend_config(
+        backend, bits)
+    if backend == "qbits":
+        return qlinear_qbits.QuantLinear
+    else:
+        from auto_gptq.utils.import_utils import dynamically_import_QuantLinear
+        return dynamically_import_QuantLinear(
+            use_triton=use_triton,
+            desc_act=False,
+            group_size=group_size,
+            bits=bits,
+            disable_exllama=disable_exllamav1,
+            disable_exllamav2=disable_exllamav2,
+            use_qigen=use_qigen,
+            disable_marlin=disable_marlin,
+        )
 
 
 def is_optimum_habana_available():
@@ -154,7 +176,7 @@ def quant_weight_sym(weight, num_bits=4, v=0, min_scale=0, max_scale=0, scale_dt
         wmax = torch.clamp(weight.max(1)[0], min=0)
     wmax_new = torch.max(wmin.abs(), wmax)
     tmp = wmin < 0
-    wmin_new = wmin.clone()  ##must clone, otherwise inplace backward will occur
+    wmin_new = wmin.clone()  # must clone, otherwise inplace backward will occur
     if torch.any(tmp):
         wmin_new[tmp] = -wmax_new[tmp]
 
@@ -223,13 +245,14 @@ def quant_weight(
             weight, num_bits, sym=sym, v=v, min_scale=min_scale, max_scale=max_scale, scale_dtype=scale_dtype
         )
         weight = weight.reshape(orig_shape)
-        scale = scale.reshape(weight.shape[0], -1)  ##only for linear, conv1d
+        scale = scale.reshape(weight.shape[0], -1)  # only for linear, conv1d
         if zp is not None:
             zp = zp.reshape(weight.shape[0], -1)
         return weight, scale, zp
 
     else:
-        pad_len = (weight.shape[1] + group_size - 1) // group_size * group_size - weight.shape[1]
+        pad_len = (weight.shape[1] + group_size -
+                   1) // group_size * group_size - weight.shape[1]
         weight_new = torch.nn.functional.pad(weight, (0, pad_len))
         v = torch.nn.functional.pad(v, (0, pad_len))
         weight_new = weight_new.reshape(-1, group_size)
@@ -241,7 +264,8 @@ def quant_weight(
         weight_new = weight_new.reshape(orig_shape[0], -1)
 
         weight_new = weight_new[:, :-pad_len]
-        scale = scale.reshape(weight_new.shape[0], -1)  ##only for linear, conv1d
+        # only for linear, conv1d
+        scale = scale.reshape(weight_new.shape[0], -1)
         if zp is not None:
             zp = zp.reshape(weight_new.shape[0], -1)
         return weight_new, scale, zp
@@ -268,15 +292,18 @@ def quant_weight_w_scale(weight, scale, zp, group_size=-1, device="cpu"):
     leng = weight.shape[1] // group_size
     tail_flag = False if weight.shape[1] % group_size == 0 else True
     for i in range(leng):
-        int_weight_tmp = weight[:, i * group_size : (i + 1) * group_size] / scale[:, i].unsqueeze(1)
+        int_weight_tmp = weight[:, i *
+                                group_size: (i + 1) * group_size] / scale[:, i].unsqueeze(1)
         if zp is not None:
             int_weight_tmp += zp[:, i].unsqueeze(1)
-        int_weight[:, i * group_size : (i + 1) * group_size] = torch.round(int_weight_tmp)
+        int_weight[:, i * group_size: (i + 1) *
+                   group_size] = torch.round(int_weight_tmp)
     if tail_flag:
-        int_weight_tmp = weight[:, leng * group_size :] / scale[:, -1].unsqueeze(1)
+        int_weight_tmp = weight[:, leng *
+                                group_size:] / scale[:, -1].unsqueeze(1)
         if zp is not None:
             int_weight_tmp += zp[:, -1].unsqueeze(1)
-        int_weight[:, leng * group_size :] = torch.round(int_weight_tmp)
+        int_weight[:, leng * group_size:] = torch.round(int_weight_tmp)
     return int_weight
 
 
@@ -322,7 +349,8 @@ def get_scale_shape(weight, group_size):
     if group_size == -1 or weight.shape[1] < group_size:
         shape = weight.shape[0]
     else:
-        shape = weight.shape[0] * ((weight.shape[1] + group_size - 1) // group_size)
+        shape = weight.shape[0] * \
+            ((weight.shape[1] + group_size - 1) // group_size)
 
     return shape
 
@@ -384,7 +412,7 @@ def get_block_names(model):
     for n, m in model.named_modules():
         if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
             target_m = (n, m)
-            break  ## only find the first modulelist, may be not robust
+            break  # only find the first modulelist, may be not robust
     for n, m in target_m[1].named_children():
         block_names.append(target_m[0] + "." + n)
     return block_names
@@ -443,13 +471,16 @@ def sampling_inputs(input_ids, input_others, indices, seqlen, share_attention_ma
     current_input_ids = [input_ids[i] for i in indices]
     current_input_ids = torch.cat(current_input_ids, dim=input_dim)
 
-    current_input_others = {"positional_inputs": input_others["positional_inputs"]}
+    current_input_others = {
+        "positional_inputs": input_others["positional_inputs"]}
     for key in input_others.keys():
         if not share_attention_mask_flag and ("attention_mask" in key or "alibi" in key):
             current_input_others[key] = None
             if input_others[key] is not None:
-                current_input_others[key] = [input_others[key][i] for i in indices]
-                current_input_others[key] = torch.cat(current_input_others[key], dim=0)
+                current_input_others[key] = [
+                    input_others[key][i] for i in indices]
+                current_input_others[key] = torch.cat(
+                    current_input_others[key], dim=0)
 
         else:
             current_input_others[key] = input_others[key]
@@ -484,9 +515,10 @@ def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.flo
             with autocast(device_type=device.split(":")[0], dtype=amp_dtype):  # pragma: no cover
                 output = block(
                     input_ids, alibi=alibi, *input_tuple, **input_others
-                )  ##TODO is this correct for all models with alibi?
+                )  # TODO is this correct for all models with alibi?
         else:
-            output = block(input_ids, alibi=alibi, *input_tuple, **input_others)
+            output = block(input_ids, alibi=alibi, *
+                           input_tuple, **input_others)
     else:
         if amp:
             with autocast(device_type=device.split(":")[0], dtype=amp_dtype):  # pragma: no cover
@@ -554,7 +586,8 @@ class CpuInfo(object):
             if max_extension_support >= 7:
                 ecx = cpuid._run_asm(
                     b"\x31\xC9",  # xor ecx, ecx
-                    b"\xB8\x07\x00\x00\x00" b"\x0f\xa2" b"\x89\xC8" b"\xC3",  # mov eax, 7  # cpuid  # mov ax, cx  # ret
+                    # mov eax, 7  # cpuid  # mov ax, cx  # ret
+                    b"\xB8\x07\x00\x00\x00" b"\x0f\xa2" b"\x89\xC8" b"\xC3",
                 )
                 self._vnni = bool(ecx & (1 << 11))
                 eax = cpuid._run_asm(
@@ -641,7 +674,8 @@ def convert_dtype_str2torch(str_dtype):
     elif str_dtype == "bf16" or str_dtype == "bfloat16":
         return torch.bfloat16
     else:
-        assert False, "Unsupported str dtype {} to torch dtype".format(str_dtype)
+        assert False, "Unsupported str dtype {} to torch dtype".format(
+            str_dtype)
 
 
 def convert_dtype_torch2str(dtype):
@@ -693,7 +727,8 @@ def convert_dtype_torch2str_hf(dtype):
             return dtype
     str_dtype = str(dtype)
     if "." not in str_dtype:
-        assert False, "Unsupported pytorch dtype {} to huggingface str dtype".format(dtype)
+        assert False, "Unsupported pytorch dtype {} to huggingface str dtype".format(
+            dtype)
     str_dtype = str_dtype.split(".")[1]
     return str_dtype
 
@@ -715,7 +750,8 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
     weight_memory = weight.numel() * weight.element_size()
     if "cuda" in device:
         current_gpu_index = torch.cuda.current_device()
-        total_memory = torch.cuda.get_device_properties(current_gpu_index).total_memory
+        total_memory = torch.cuda.get_device_properties(
+            current_gpu_index).total_memory
         used_memory = torch.cuda.memory_allocated(current_gpu_index)
         free_space = total_memory - used_memory
     elif "hpu" in device:
@@ -732,7 +768,9 @@ def check_memory_availability(device, inputs, weight, org_seqlen, org_bs):
     while seqlen >= 128:
         input_size = bs * seqlen * in_feature
         output_size = bs * seqlen * out_feature
-        input_output_memory = 2 * (input_size * inputs.element_size() + output_size * inputs.element_size())
+        input_output_memory = 2 * \
+            (input_size * inputs.element_size() +
+             output_size * inputs.element_size())
         if input_output_memory < free_space:
             return True, seqlen, bs
         seqlen = seqlen // 2
